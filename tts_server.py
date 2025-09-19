@@ -24,6 +24,13 @@ logger = logging.getLogger(__name__)
 
 dotenv.load_dotenv()
 
+# Configure logging early so INFO-level messages are visible
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s:%(funcName)s:%(lineno)d - %(message)s",
+)
+
 
 # Suppress HuggingFace tokenizers parallelism warnings
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -64,33 +71,37 @@ def synthesize(text):
     line = urllib.parse.unquote(request.url[request.url.find('synthesize/') + 11:])
     
     try:
+        accent_start = time.perf_counter()
         processed_text = preprocess_text(line)
+        accent_duration = (time.perf_counter() - accent_start)*1000
+        logging.info(f"synthesize: stage=accent; duration={accent_duration:.0f} ms")
         logging.info(f"Processed text: {processed_text}")
         if processed_text == "Не шм+огла": processed_text = "Не шмогл+а"
         text_len = len(processed_text)
 
         tts_start = time.perf_counter()
         audio = tts(processed_text, lenght_scale=2)
-        tts_duration = time.perf_counter() - tts_start
-        tts_per_char = tts_duration / max(text_len, 1) * 1000
-        logging.info(
-            f"synthesize: tts_time_seconds={tts_duration:.3f}; char={tts_per_char:.6f} ms"
-        )
+        tts_duration = (time.perf_counter() - tts_start)*1000
+        logging.info(f"synthesize: stage=tts; duration={tts_duration:.0f} ms")
         
         # Create temporary files for WAV and MP3
         with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as wav_file:
             wav_path = wav_file.name
         
-        mp3_path = wav_path.replace('.wav', '.mp3')
-        
         try:
             # Save WAV
+            save_start = time.perf_counter()
             tts.save_wav(audio, wav_path)
-            
+            save_duration = time.perf_counter() - save_start
+            logging.info(f"synthesize: stage=save_wav; duration={save_duration:.0f} ms")
+
             # Convert WAV → MP3 via FFmpeg
+            mp3_path = wav_path.replace('.wav', '.mp3')
             cmd = [ 'ffmpeg', '-y', '-i', wav_path, '-codec:a', 'libmp3lame', '-q:a', '2', mp3_path ]
-            logging.info(f"INFO: Converting WAV to MP3 via FFmpeg: {cmd}")
+            ffmpeg_start = time.perf_counter()
             subprocess.run(cmd, check=True, capture_output=True)
+            ffmpeg_duration = (time.perf_counter() - ffmpeg_start)*1000
+            logging.info(f"synthesize: stage=ffmpeg; duration={ffmpeg_duration:.0f} ms")
             
             # Read MP3 and return
             with open(mp3_path, 'rb') as f:
@@ -109,9 +120,9 @@ def synthesize(text):
             headers={'Content-Disposition': 'inline; filename="glados.mp3"'}
         )
         total_duration = time.perf_counter() - request_start
-        total_per_char = total_duration / max(text_len, 1)
+        total_per_char = total_duration / max(text_len, 1) * 1000
         logging.info(
-            f"synthesize: total_time_seconds={total_duration:.3f}; per_char_seconds={total_per_char:.6f}; text_len={text_len}"
+            f"synthesize: total={total_duration:.3f} s; char={total_per_char:.0f} ms"
         )
         return response
         
