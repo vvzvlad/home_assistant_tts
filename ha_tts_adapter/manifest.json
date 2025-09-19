@@ -1,0 +1,13 @@
+{
+  "domain": "ha_tts_adapter",
+  "name": "HA TTS Adapter",
+  "version": "0.1.0",
+  "requirements": [
+    "requests>=2.31.0"
+  ],
+  "documentation": "https://github.com/your-org/ha-voice-logic",
+  "issue_tracker": "https://github.com/your-org/ha-voice-logic/issues",
+  "codeowners": [
+    "@vvzvlad"
+  ]
+}

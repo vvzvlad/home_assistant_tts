@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+# flake8: noqa
+# pylint: disable=broad-exception-raised, raise-missing-from, too-many-arguments, redefined-outer-name
+# pylint: disable=multiple-statements, logging-fstring-interpolation, trailing-whitespace, line-too-long
+# pylint: disable=broad-exception-caught, missing-function-docstring, missing-class-docstring
+# pylint: disable=f-string-without-interpolation, import-error
+# pylance: disable=reportMissingImports, reportMissingModuleSource
+# mypy: disable-error-code="import-untyped, import-not-found, attr-defined"
+
+import urllib.parse
+import subprocess
+import tempfile
+import os
+from flask import Flask, request, Response
+from TeraTTS import TTS
+from ruaccent import RUAccent
+
+# Suppress HuggingFace tokenizers parallelism warnings
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+print("INFO: TOKENIZERS_PARALLELISM=false (suppress tokenizer parallelism warnings)")
+
+PORT = 8124
+MODEL_PATH = "TeraTTS/glados2-g2p-vits"
+
+print("INFO: Initializing TTS Engine (TeraTTS GLaDOS2)...")
+
+accentizer = RUAccent()
+try:
+    accentizer.load(omograph_model_size="turbo", use_dictionary=True)
+    print("INFO: RUAccent models loaded: omograph_model_size=turbo, use_dictionary=True")
+except Exception as e:
+    print(f"RUAccent initialization error: {str(e)}")
+
+try:
+    tts = TTS(MODEL_PATH, add_time_to_end=0.5, tokenizer_load_dict=False)
+    print(f"INFO: TTS model loaded from {MODEL_PATH}")
+except Exception as e:
+    raise RuntimeError(f"TTS model initialization error from {MODEL_PATH}: {str(e)}")
+
+def preprocess_text(raw_text: str) -> str:
+    """Apply accentization and text normalization for better synthesis quality."""
+    try:
+        return accentizer.process_all(raw_text)
+    except Exception as e:
+        print(f"RUAccent processing error: {str(e)}; fallback to raw text")
+        return raw_text
+
+app = Flask(__name__)
+
+@app.route('/synthesize/', defaults={'text': ''})
+@app.route('/synthesize/<path:text>')
+def synthesize(text):
+    if text == '':
+        return 'No input', 400
+
+    line = urllib.parse.unquote(request.url[request.url.find('synthesize/') + 11:])
+    
+    try:
+        processed_text = preprocess_text(line)
+        print(f"Processed text: {processed_text}")
+        if processed_text == "Не шм+огла": processed_text = "Не шмогл+а"
+        processed_text = processed_text.replace(",", "     ")
+        audio = tts(processed_text, lenght_scale=2)
+        
+        # Create temporary files for WAV and MP3
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as wav_file:
+            wav_path = wav_file.name
+        
+        mp3_path = wav_path.replace('.wav', '.mp3')
+        
+        try:
+            # Save WAV
+            tts.save_wav(audio, wav_path)
+            
+            # Convert WAV → MP3 via FFmpeg
+            subprocess.run([
+                'ffmpeg', '-y', '-i', wav_path,
+                '-codec:a', 'libmp3lame', '-q:a', '2',
+                mp3_path
+            ], check=True, capture_output=True)
+            
+            # Read MP3 and return
+            with open(mp3_path, 'rb') as f:
+                audio_data = f.read()
+                
+        finally:
+            # Cleanup temporary files
+            if os.path.exists(wav_path):
+                os.unlink(wav_path)
+            if os.path.exists(mp3_path):
+                os.unlink(mp3_path)
+        
+        return Response(
+            audio_data,
+            mimetype='audio/mpeg',
+            headers={'Content-Disposition': 'inline; filename="glados.mp3"'}
+        )
+        
+    except subprocess.CalledProcessError as e:
+        return f"FFmpeg conversion error: {str(e)}", 500
+    except Exception as e:
+        return f"TTS synthesis error: {str(e)}", 500
+
+if __name__ == "__main__":
+    print("INFO: Initializing TTS Server (Flask)...")
+    # Hide default Flask banner
+    import sys as _sys
+    cli = _sys.modules.get('flask.cli')
+    if cli is not None:
+        cli.show_server_banner = lambda *x: None
+    app.run(host="0.0.0.0", port=PORT)

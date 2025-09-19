@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.DS_Store
+ha_tts/model/
+ha_tts/__pycache__/
+ha_tts/ha_tts_adapter/__pycache__/
+.env
+model/
