@@ -9,11 +9,11 @@
 # pylance: disable=reportMissingImports, reportMissingModuleSource
 # mypy: disable-error-code="import-untyped, import-not-found, attr-defined"
 
-from pyexpat import model
 import urllib.parse
 import subprocess
 import tempfile
 import os
+import time
 from flask import Flask, request, Response
 from TeraTTS import TTS
 from ruaccent import RUAccent
@@ -60,13 +60,22 @@ app = Flask(__name__)
 def synthesize(text):
     if text == '': return 'No input', 400
 
+    request_start = time.perf_counter()
     line = urllib.parse.unquote(request.url[request.url.find('synthesize/') + 11:])
     
     try:
         processed_text = preprocess_text(line)
         logging.info(f"Processed text: {processed_text}")
         if processed_text == "Не шм+огла": processed_text = "Не шмогл+а"
+        text_len = len(processed_text)
+
+        tts_start = time.perf_counter()
         audio = tts(processed_text, lenght_scale=2)
+        tts_duration = time.perf_counter() - tts_start
+        tts_per_char = tts_duration / max(text_len, 1) * 1000
+        logging.info(
+            f"synthesize: tts_time_seconds={tts_duration:.3f}; char={tts_per_char:.6f} ms"
+        )
         
         # Create temporary files for WAV and MP3
         with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as wav_file:
@@ -94,11 +103,17 @@ def synthesize(text):
             if os.path.exists(mp3_path):
                 os.unlink(mp3_path)
         
-        return Response(
+        response = Response(
             audio_data,
             mimetype='audio/mpeg',
             headers={'Content-Disposition': 'inline; filename="glados.mp3"'}
         )
+        total_duration = time.perf_counter() - request_start
+        total_per_char = total_duration / max(text_len, 1)
+        logging.info(
+            f"synthesize: total_time_seconds={total_duration:.3f}; per_char_seconds={total_per_char:.6f}; text_len={text_len}"
+        )
+        return response
         
     except subprocess.CalledProcessError as e:
         return f"FFmpeg conversion error: {str(e)}", 500
@@ -112,4 +127,4 @@ if __name__ == "__main__":
     cli = _sys.modules.get('flask.cli')
     if cli is not None:
         cli.show_server_banner = lambda *x: None
-    app.run(host="0.0.0.0", port=os.getenv("PORT", 8124))
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8124")))
